@@ -39,28 +39,18 @@ import java.lang.ref.WeakReference
  * One service for all players.
  */
 class PlayerService : MediaBrowserServiceCompat() {
-    private val player: Player by lazy {
-        Player(this).apply {
-            /*
-            Create the player notification and start immediately the service in foreground,
-            otherwise if nothing is played or initializing the player and its components (especially
-            loading stream metadata) takes a lot of time, the app would crash on Android 8+ as the
-            service would never be put in the foreground while we said to the system we would do so
-             */
-            UIs()[NotificationPlayerUi::class.java].ifPresent {
-                it.createNotificationAndStartForeground()
-            }
-        }
-    }
+    private var player: Player? = null
 
     private val mBinder: IBinder = LocalBinder(this)
-    private val compositeDisposableLoadChildren = CompositeDisposable()
-    private var mediaBrowserConnector: MediaBrowserConnector? = null
+    private val disposables = CompositeDisposable()
+    private var _mediaBrowserConnector: MediaBrowserConnector? = null
+    private val mediaBrowserConnector: MediaBrowserConnector
         get() {
-            if (field == null) {
-                field = MediaBrowserConnector(this)
+            return _mediaBrowserConnector ?: run {
+                val newMediaBrowserConnector = MediaBrowserConnector(this)
+                _mediaBrowserConnector = newMediaBrowserConnector
+                newMediaBrowserConnector
             }
-            return field
         }
 
     val sessionConnector: MediaSessionConnector?
@@ -78,13 +68,14 @@ class PlayerService : MediaBrowserServiceCompat() {
         Localization.assureCorrectAppLanguage(this)
         ThemeHelper.setTheme(this)
 
+        player = Player(this)
         /*
         Create the player notification and start immediately the service in foreground,
         otherwise if nothing is played or initializing the player and its components (especially
         loading stream metadata) takes a lot of time, the app would crash on Android 8+ as the
         service would never be put in the foreground while we said to the system we would do so
          */
-        player.UIs()[NotificationPlayerUi::class.java].ifPresent {
+        player!!.UIs()[NotificationPlayerUi::class.java].ifPresent {
             it.createNotificationAndStartForeground()
         }
     }
@@ -112,11 +103,11 @@ class PlayerService : MediaBrowserServiceCompat() {
         If the service is already started in foreground, requesting it to be started shouldn't
         do anything
          */
-        player.UIs()[NotificationPlayerUi::class.java].ifPresent {
+        player?.UIs()?.get(NotificationPlayerUi::class.java)?.ifPresent {
             it.createNotificationAndStartForeground()
         }
 
-        if (Intent.ACTION_MEDIA_BUTTON == intent.action && (player.playQueue == null)) {
+        if (Intent.ACTION_MEDIA_BUTTON == intent.action && (player?.playQueue == null)) {
             /*
             No need to process media button's actions if the player is not working, otherwise
             the player service would strangely start with nothing to play
@@ -127,8 +118,8 @@ class PlayerService : MediaBrowserServiceCompat() {
             return START_NOT_STICKY
         }
 
-        player.handleIntent(intent)
-        player.UIs()[MediaSessionPlayerUi::class.java].ifPresent {
+        player?.handleIntent(intent)
+        player?.UIs()?.get(MediaSessionPlayerUi::class.java)?.ifPresent {
             it.handleMediaButtonIntent(intent)
         }
 
@@ -140,17 +131,17 @@ class PlayerService : MediaBrowserServiceCompat() {
             Log.d(TAG, "stopForImmediateReusing() called")
         }
 
-        if (!player.exoPlayerIsNull()) {
+        if (player != null && !player!!.exoPlayerIsNull()) {
             // Releases wifi & cpu, disables keepScreenOn, etc.
             // We can't just pause the player here because it will make transition
             // from one stream to a new stream not smooth
-            player.smoothStopForImmediateReusing()
+            player?.smoothStopForImmediateReusing()
         }
     }
 
     override fun onTaskRemoved(rootIntent: Intent) {
         super.onTaskRemoved(rootIntent)
-        if (!player.videoPlayerSelected()) {
+        if (player != null && !player!!.videoPlayerSelected()) {
             return
         }
         onDestroy()
@@ -166,14 +157,15 @@ class PlayerService : MediaBrowserServiceCompat() {
 
         cleanup()
 
-        mediaBrowserConnector?.release()
-        mediaBrowserConnector = null
+        mediaBrowserConnector.release()
+        _mediaBrowserConnector = null
 
-        compositeDisposableLoadChildren.clear()
+        disposables.clear()
     }
 
     private fun cleanup() {
-        player.destroy()
+        player?.destroy()
+        player = null
     }
 
     fun stopService() {
@@ -187,7 +179,7 @@ class PlayerService : MediaBrowserServiceCompat() {
 
     override fun onBind(intent: Intent): IBinder = mBinder
 
-    // MediaBrowserServiceCompat methods
+    // MediaBrowserServiceCompat methods (they defer function calls to mediaBrowserConnector)
     override fun onGetRoot(
         clientPackageName: String,
         clientUid: Int,
@@ -204,7 +196,7 @@ class PlayerService : MediaBrowserServiceCompat() {
                 it.onLoadChildren(parentId).subscribe { mediaItems ->
                     result.sendResult(mediaItems)
                 }
-            compositeDisposableLoadChildren.add(disposable)
+            disposables.add(disposable)
         }
     }
 
