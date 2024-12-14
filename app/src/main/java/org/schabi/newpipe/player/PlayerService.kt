@@ -177,7 +177,13 @@ class PlayerService : MediaBrowserServiceCompat() {
         super.attachBaseContext(AudioServiceLeakFix.preventLeakOf(base))
     }
 
-    override fun onBind(intent: Intent): IBinder = mBinder
+    override fun onBind(intent: Intent): IBinder? {
+        if (SERVICE_INTERFACE == intent.action) {
+            // For actions related to the media browser service, pass the onBind to the superclass
+            return super.onBind(intent)
+        }
+        return mBinder
+    }
 
     // MediaBrowserServiceCompat methods (they defer function calls to mediaBrowserConnector)
     override fun onGetRoot(
