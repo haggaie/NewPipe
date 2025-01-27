@@ -180,10 +180,10 @@ class PlayerService : MediaBrowserServiceCompat() {
     }
 
     override fun onBind(intent: Intent): IBinder? {
-        if (SERVICE_INTERFACE == intent.action) {
-            // For actions related to the media browser service, pass the onBind to the superclass
+        // Send MediaBrowserServiceCompat messages to the base class, while keeping the existing
+        // custom binder PlayerService.LocalBinder interface for the existing messages.
+        if (SERVICE_INTERFACE == intent.action)
             return super.onBind(intent)
-        }
         return mBinder
     }
 
