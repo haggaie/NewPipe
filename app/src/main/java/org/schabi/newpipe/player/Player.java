@@ -100,6 +100,7 @@ import org.schabi.newpipe.player.helper.CustomRenderersFactory;
 import org.schabi.newpipe.player.helper.LoadController;
 import org.schabi.newpipe.player.helper.PlayerDataSource;
 import org.schabi.newpipe.player.helper.PlayerHelper;
+import org.schabi.newpipe.player.mediabrowser.MediaBrowserService;
 import org.schabi.newpipe.player.mediaitem.MediaItemTag;
 import org.schabi.newpipe.player.mediasession.MediaSessionPlayerUi;
 import org.schabi.newpipe.player.notification.NotificationPlayerUi;
@@ -269,7 +270,8 @@ public final class Player implements PlaybackListener, Listener {
     //////////////////////////////////////////////////////////////////////////*/
     //region Constructor
 
-    public Player(@NonNull final PlayerService service) {
+    public Player(@NonNull final PlayerService service,
+                  @NonNull final MediaBrowserService mediaBrowserService) {
         this.service = service;
         context = service;
         prefs = PreferenceManager.getDefaultSharedPreferences(context);
@@ -302,7 +304,7 @@ public final class Player implements PlaybackListener, Listener {
         // notification ui in the UIs list, since the notification depends on the media session in
         // PlayerUi#initPlayer(), and UIs.call() guarantees UI order is preserved.
         UIs = new PlayerUiList(
-                new MediaSessionPlayerUi(this, service.getSessionConnector()),
+                new MediaSessionPlayerUi(this, mediaBrowserService.getSessionConnector()),
                 new NotificationPlayerUi(this)
         );
     }

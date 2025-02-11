@@ -18,36 +18,63 @@
  */
 package org.schabi.newpipe.player
 
+import android.app.Service
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.os.Binder
-import android.os.Bundle
 import android.os.IBinder
-import android.support.v4.media.MediaBrowserCompat
 import android.util.Log
-import androidx.media.MediaBrowserServiceCompat
-import com.google.android.exoplayer2.ext.mediasession.MediaSessionConnector
-import io.reactivex.rxjava3.disposables.CompositeDisposable
-import org.schabi.newpipe.player.PlayerService.LocalBinder
-import org.schabi.newpipe.player.mediabrowser.MediaBrowserConnector
+import org.schabi.newpipe.player.mediabrowser.MediaBrowserService
 import org.schabi.newpipe.player.mediasession.MediaSessionPlayerUi
 import org.schabi.newpipe.player.notification.NotificationPlayerUi
 import org.schabi.newpipe.util.Localization
 import org.schabi.newpipe.util.ThemeHelper
 import java.lang.ref.WeakReference
+import java.util.LinkedList
 import java.util.Objects
 import java.util.function.Consumer
 
 /**
  * One service for all players.
  */
-class PlayerService : MediaBrowserServiceCompat() {
+class PlayerService : Service() {
     private var player: Player? = null
 
     private val mBinder: IBinder = LocalBinder(this)
 
-    private var mediaBrowserConnector: MediaBrowserConnector? = null
-    private val compositeDisposableLoadChildren = CompositeDisposable()
+    var runAfterConnected: (() -> Unit)? = null
+
+    var mediaBrowserService: MediaBrowserService? = null
+    private val mediaBrowserConnection =
+        object : ServiceConnection {
+            override fun onServiceConnected(
+                className: ComponentName?,
+                service: IBinder?,
+            ) {
+                val binder = service as MediaBrowserService.LocalBinder
+                mediaBrowserService = binder.getService()
+                runAfterConnected?.invoke()
+            }
+
+            override fun onServiceDisconnected(className: ComponentName?) {
+                mediaBrowserService = null
+            }
+        }
+
+    private val playerInitializedListeners = LinkedList<PlayerInitializedListener>()
+
+    fun addPlayerInitializedListener(listener: PlayerInitializedListener) {
+        playerInitializedListeners.push(listener)
+        if (player != null) {
+            listener.onPlayerInitialized(player!!)
+        }
+    }
+
+    fun removePlayerInitializedListener(listener: PlayerInitializedListener) {
+        playerInitializedListeners.remove(listener)
+    }
 
     /*//////////////////////////////////////////////////////////////////////////
     // Service's LifeCycle
@@ -61,31 +88,71 @@ class PlayerService : MediaBrowserServiceCompat() {
         Localization.assureCorrectAppLanguage(this)
         ThemeHelper.setTheme(this)
 
-        mediaBrowserConnector = MediaBrowserConnector(this)
+        bindMediaBrowserService(this)
     }
 
     private fun initializePlayerIfNeeded() {
         if (player == null) {
-            player = Player(this)
+            player = Player(this, mediaBrowserService!!)
             /*
             Create the player notification and start immediately the service in foreground,
             otherwise if nothing is played or initializing the player and its components (especially
             loading stream metadata) takes a lot of time, the app would crash on Android 8+ as the
             service would never be put in the foreground while we said to the system we would do so
              */
-            player!!.UIs().get<NotificationPlayerUi?>(NotificationPlayerUi::class.java)
+            player!!
+                .UIs()
+                .get<NotificationPlayerUi?>(NotificationPlayerUi::class.java)
                 .ifPresent(Consumer { obj: NotificationPlayerUi? -> obj!!.createNotificationAndStartForeground() })
+
+            playerInitializedListeners.forEach {
+                it.onPlayerInitialized(player!!)
+            }
         }
     }
 
-    override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
+    var bound = false
+
+    private fun bindMediaBrowserService(context: Context) {
+        if (DEBUG) {
+            Log.d(TAG, "bindMediaBrowserService() called")
+        }
+
+        val serviceIntent = Intent(context, MediaBrowserService::class.java)
+        bound =
+            context.bindService(
+                serviceIntent,
+                mediaBrowserConnection,
+                BIND_AUTO_CREATE,
+            )
+        if (!bound) {
+            context.unbindService(mediaBrowserConnection)
+        }
+    }
+
+    private fun unbindMediaBrowserService(context: Context) {
+        if (DEBUG) {
+            Log.d(TAG, "unbindMediaBrowserService() called")
+        }
+
+        if (bound) {
+            context.unbindService(mediaBrowserConnection)
+            bound = false
+        }
+    }
+
+    override fun onStartCommand(
+        intent: Intent,
+        flags: Int,
+        startId: Int,
+    ): Int {
         if (DEBUG) {
             Log.d(
                 TAG,
                 (
                     "onStartCommand() called with: intent = [" + intent +
                         "], flags = [" + flags + "], startId = [" + startId + "]"
-                    )
+                    ),
             )
         }
 
@@ -100,7 +167,9 @@ class PlayerService : MediaBrowserServiceCompat() {
         do anything
          */
         if (player != null) {
-            player!!.UIs().get<NotificationPlayerUi?>(NotificationPlayerUi::class.java)
+            player!!
+                .UIs()
+                .get<NotificationPlayerUi?>(NotificationPlayerUi::class.java)
                 .ifPresent(Consumer { obj: NotificationPlayerUi? -> obj!!.createNotificationAndStartForeground() })
         }
 
@@ -117,10 +186,26 @@ class PlayerService : MediaBrowserServiceCompat() {
             return START_NOT_STICKY
         }
 
-        initializePlayerIfNeeded()
-        Objects.requireNonNull<Player?>(player).handleIntent(intent)
-        player!!.UIs().get<MediaSessionPlayerUi?>(MediaSessionPlayerUi::class.java)
-            .ifPresent(Consumer { ui: MediaSessionPlayerUi? -> ui!!.handleMediaButtonIntent(intent) })
+        runAfterConnected =
+
+            fun() {
+                initializePlayerIfNeeded()
+                Objects.requireNonNull<Player?>(player).handleIntent(intent)
+                player!!
+                    .UIs()
+                    .get<MediaSessionPlayerUi?>(MediaSessionPlayerUi::class.java)
+                    .ifPresent(
+                        Consumer { ui: MediaSessionPlayerUi? ->
+                            ui!!.handleMediaButtonIntent(
+                                intent,
+                            )
+                        },
+                    )
+            }
+        if (mediaBrowserService != null) {
+            runAfterConnected?.invoke()
+            runAfterConnected = null
+        }
 
         return START_NOT_STICKY
     }
@@ -154,13 +239,6 @@ class PlayerService : MediaBrowserServiceCompat() {
         }
 
         cleanup()
-
-        if (mediaBrowserConnector != null) {
-            mediaBrowserConnector!!.release()
-            mediaBrowserConnector = null
-        }
-
-        compositeDisposableLoadChildren.clear()
     }
 
     private fun cleanup() {
@@ -168,6 +246,7 @@ class PlayerService : MediaBrowserServiceCompat() {
             player!!.destroy()
             player = null
         }
+        unbindMediaBrowserService(this)
     }
 
     fun stopService() {
@@ -179,61 +258,22 @@ class PlayerService : MediaBrowserServiceCompat() {
         super.attachBaseContext(AudioServiceLeakFix.preventLeakOf(base))
     }
 
-    override fun onBind(intent: Intent): IBinder? {
-        // Send MediaBrowserServiceCompat messages to the base class, while keeping the existing
-        // custom binder PlayerService.LocalBinder interface for the existing messages.
-        if (SERVICE_INTERFACE == intent.action)
-            return super.onBind(intent)
-        return mBinder
+    interface PlayerInitializedListener {
+        fun onPlayerInitialized(player: Player)
     }
 
-    fun getSessionConnector(): MediaSessionConnector {
-        return mediaBrowserConnector!!.getSessionConnector()
-    }
+    override fun onBind(intent: Intent): IBinder = mBinder
 
-    // MediaBrowserServiceCompat methods
-    override fun onGetRoot(
-        clientPackageName: String,
-        clientUid: Int,
-        rootHints: Bundle?
-    ): BrowserRoot? {
-        return mediaBrowserConnector!!.onGetRoot(clientPackageName, clientUid, rootHints)
-    }
-
-    override fun onLoadChildren(
-        parentId: String,
-        result: Result<List<MediaBrowserCompat.MediaItem>>
-    ) {
-        result.detach()
-        val disposable = mediaBrowserConnector!!.onLoadChildren(parentId)
-            .subscribe(
-                io.reactivex.rxjava3.functions.Consumer {
-                    result.sendResult(
-                        it
-                    )
-                }
-            )
-        compositeDisposableLoadChildren.add(disposable)
-    }
-
-    override fun onSearch(
-        query: String,
-        extras: Bundle?,
-        result: Result<List<MediaBrowserCompat.MediaItem>>
-    ) {
-        mediaBrowserConnector!!.onSearch(query, result)
-    }
-
-    class LocalBinder internal constructor(playerService: PlayerService?) : Binder() {
+    class LocalBinder internal constructor(
+        playerService: PlayerService?,
+    ) : Binder() {
         private val playerService: WeakReference<PlayerService?>
 
         init {
             this.playerService = WeakReference<PlayerService?>(playerService)
         }
 
-        fun getService(): PlayerService? {
-            return playerService.get()
-        }
+        fun getService(): PlayerService? = playerService.get()
 
         fun getPlayer(): Player? = playerService.get()?.player
     }

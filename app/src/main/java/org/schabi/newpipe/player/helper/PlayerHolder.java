@@ -7,6 +7,7 @@ import android.content.ServiceConnection;
 import android.os.IBinder;
 import android.util.Log;
 
+import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 import androidx.core.content.ContextCompat;
 
@@ -166,12 +167,19 @@ public final class PlayerHolder {
             }
             final PlayerService.LocalBinder localBinder = (PlayerService.LocalBinder) service;
 
-            playerService = localBinder.getPlayer().getService();
-            player = localBinder.getPlayer();
-            if (listener != null) {
-                listener.onServiceConnected(player, playerService, playAfterConnect);
-            }
-            startPlayerListener();
+            playerService = localBinder.getService();
+            playerService.addPlayerInitializedListener(
+                    new PlayerService.PlayerInitializedListener() {
+                        @Override
+                        public void onPlayerInitialized(@NonNull final Player newPlayer) {
+                            PlayerHolder.this.player = newPlayer;
+                            if (listener != null) {
+                                listener.onServiceConnected(player, playerService,
+                                                            playAfterConnect);
+                            }
+                            startPlayerListener();
+                        }
+            });
         }
     }
 

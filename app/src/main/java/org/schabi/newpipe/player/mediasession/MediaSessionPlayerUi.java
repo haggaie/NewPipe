@@ -38,10 +38,8 @@ public class MediaSessionPlayerUi extends PlayerUi
         implements SharedPreferences.OnSharedPreferenceChangeListener {
     private static final String TAG = "MediaSessUi";
 
-    @Nullable
-    private MediaSessionCompat mediaSession;
-    @Nullable
-    private MediaSessionConnector sessionConnector;
+    @NonNull
+    private final MediaSessionConnector sessionConnector;
 
     private final String ignoreHardwareMediaButtonsKey;
     private boolean shouldIgnoreHardwareMediaButtons = false;
@@ -49,11 +47,13 @@ public class MediaSessionPlayerUi extends PlayerUi
     // used to check whether any notification action changed, before sending costly updates
     private List<NotificationActionData> prevNotificationActions = List.of();
 
+    private MediaSessionCompat getMediaSession() {
+        return sessionConnector.mediaSession;
+    }
 
     public MediaSessionPlayerUi(@NonNull final Player player,
                                 @NonNull final MediaSessionConnector sessionConnector) {
         super(player);
-        this.mediaSession = sessionConnector.mediaSession;
         this.sessionConnector = sessionConnector;
         ignoreHardwareMediaButtonsKey =
                 context.getString(R.string.ignore_hardware_media_buttons_key);
@@ -64,9 +64,9 @@ public class MediaSessionPlayerUi extends PlayerUi
         super.initPlayer();
         destroyPlayer(); // release previously used resources
 
-        mediaSession.setActive(true);
+        getMediaSession().setActive(true);
 
-        sessionConnector.setQueueNavigator(new PlayQueueNavigator(mediaSession, player));
+        sessionConnector.setQueueNavigator(new PlayQueueNavigator(getMediaSession(), player));
         sessionConnector.setPlayer(getForwardingPlayer());
 
         // It seems like events from the Media Control UI in the notification area don't go through
@@ -95,7 +95,7 @@ public class MediaSessionPlayerUi extends PlayerUi
         sessionConnector.setQueueNavigator(null);
         sessionConnector.setMediaMetadataProvider(null);
 
-        mediaSession.setActive(false);
+        getMediaSession().setActive(false);
 
         prevNotificationActions = List.of();
     }
@@ -124,11 +124,11 @@ public class MediaSessionPlayerUi extends PlayerUi
 
 
     public void handleMediaButtonIntent(final Intent intent) {
-        MediaButtonReceiver.handleIntent(mediaSession, intent);
+        MediaButtonReceiver.handleIntent(getMediaSession(), intent);
     }
 
     public Optional<MediaSessionCompat.Token> getSessionToken() {
-        return Optional.of(mediaSession.getSessionToken());
+        return Optional.of(getMediaSession().getSessionToken());
     }
 
 
@@ -193,11 +193,6 @@ public class MediaSessionPlayerUi extends PlayerUi
             // cause any trouble, it also doesn't seem to do anything, so we don't do anything to
             // save battery. Check out NotificationUtil.updateActions() to see what happens on
             // older android versions.
-            return;
-        }
-
-        if (sessionConnector == null) {
-            // sessionConnector will be null after destroyPlayer is called
             return;
         }
 
